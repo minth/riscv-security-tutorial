@@ -82,6 +82,8 @@
 #endif
 
 #define MSTATUS_MPP         0x00001800
+#define MSTATUS_MIE         0x00000008
+#define MSTATUS_MPIE        0x00000080
 
 .global portSAVE_CONTEXT
 .global portRESTORE_CONTEXT
@@ -133,8 +135,13 @@
 	STORE	x31, 30 * REGBYTES(sp)
 	
 	/* Store current stackpointer in task control block (TCB) */
-	LOAD	t0, pxCurrentTCB	//pointer
+	csrr	s0, mscratch
+	bgt		s0, x0, 2f  /*Skip update if interrupt nesting */
+	LOAD	t0, pxCurrentTCB	/* Store SP in current TCB */
 	STORE	sp, 0x0(t0)
+2:
+	addi	s0,s0,1			/*Add one to interrupt nesting*/
+	csrw	mscratch, s0
 	.endm
 
 /* Saves current error program counter (EPC) as task program counter */
@@ -150,11 +157,20 @@
 
 /* Macro for restoring task context */
 .macro portRESTORE_CONTEXT
-
 	.global	pxCurrentTCB
+	csrr	s0, mscratch
+	addi 	s0,s0,-1
+	csrw	mscratch, s0
+	li		t1, MSTATUS_MPIE
+	bne		s0,x0,0f  /*Skip loading new SP if interrupt nesting */
 	/* Load stack pointer from the current TCB */
 	LOAD	sp, pxCurrentTCB
 	LOAD	sp, 0x0(sp)
+	csrs	mstatus, t1
+	j 		1f
+0:
+	csrc	mstatus, t1		/* Disable interrupts after return*/
+1:
 
 	/* Load task program counter */
 	LOAD	t0, 31 * REGBYTES(sp)
@@ -164,8 +180,6 @@
     li t0, MSTATUS_MPP
   	csrs	mstatus, t0
 
-    li t0, 0x80
-  	csrs	mstatus, t0
 
 	/* Restore registers,
 	   Skip global pointer because that does not change */
@@ -256,6 +270,8 @@ xPortStartScheduler:
 	/* Load task program counter */
 	LOAD	t0, 31 * REGBYTES(t0)
   	csrw	mepc, t0
+  	li		t0, 1
+  	csrw	mscratch, t0
 	jal		vPortSetupTimer
 	portRESTORE_CONTEXT
 
